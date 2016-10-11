@@ -1,0 +1,64 @@
+= 與 Jenkins 整合
+
+首先遇到的問題是，如何準備不同組合的模擬器、實機，而且是在 headless 的環境。Android Emulator Plugin 可以幫上忙...
+
+這是通用的行為，以 Install Android package 為例：
+
+____
+If an Android emulator was started automatically via the "Run an Android emulator during build" option above, the APK will be installed onto that device.
+
+Otherwise, the APK will be installed onto an emulator or USB-attached Android device.
+If more than one emulator or device is present, this step will currently hang until only one emulator or device is available — this is the default Android SDK behaviour.
+____
+
+由於無法指定裝置，用途似乎被限制了?
+
+試著解鎖：
+
+----
+[android] Attempting to unlock emulator screen
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5706 shell input keyevent 82
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5706 shell input keyevent 4
+[android] Emulator is ready for use (took 61 seconds)
+----
+
+透過 log 可以觀察這個 plugin 的行為：
+
+----
+$ /Users/jeremykao/dev/android-sdk-macosx/tools/android list target
+[android] Using Android SDK: /Users/jeremykao/dev/android-sdk-macosx
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb start-server
+* daemon not running. starting it now on port 5859 *
+* daemon started successfully *
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb start-server
+[android] Starting Android emulator
+$ /Users/jeremykao/dev/android-sdk-macosx/tools/emulator -engine classic -ports 5806,5807 -report-console tcp:5865,max=60 -avd Nexus_6_API_23 -no-snapshot-load -no-snapshot-save
+emulator: WARNING: VM heap size set below hardware specified minimum of 384MB
+emulator: WARNING: Setting VM heap size to 384MB
+emulator: WARNING: Classic qemu does not support SMP. The hw.cpu.ncore option from your config file is ignored.
+HAXM is working and emulator runs in fast virt mode
+[android] Emulator reported that the console is available on port 5,806
+[android] Waiting for emulator to finish booting...
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 wait-for-device shell getprop init.svc.bootanim
+[android] Emulator reported that the startup process is 'running'
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 wait-for-device shell getprop init.svc.bootanim
+[android] Emulator reported that the startup process is 'running'
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 wait-for-device shell getprop init.svc.bootanim
+[android] Emulator reported that the startup process is 'stopped'
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 logcat -v time
+[android] Attempting to unlock emulator screen
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 shell input keyevent 82
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb -s emulator-5806 shell input keyevent 4
+[android] Emulator is ready for use (took 61 seconds)
+[Gradle] - Launching build.
+...
+BUILD SUCCESSFUL
+
+Total time: 4 mins 51.267 secs
+Build step 'Invoke Gradle script' changed build result to SUCCESS
+[android] Stopping Android emulator
+[android] Archiving emulator log
+$ /Users/jeremykao/dev/android-sdk-macosx/platform-tools/adb kill-server
+Recording test results
+...
+----

@@ -1,0 +1,364 @@
+= Test Sharding
+
+`connectedAndroidTest` task 預設會將相同的一組測試執行在所有連接的裝置上。以 https://github.com/googlesamples/android-testing/tree/master/ui/espresso[`googlesamples/android-testings`] 的 `BasicSample` 為例，它有 2 個 test case，若測試期間有連接 2 台裝置，就會有 2 x 2 = 4 個測試結果。
+
+----
+$ ./gradlew connectedAndroidTest
+...
+$ open app/build/reports/androidTests/connected/index.html
+----
+
+將 test case 的數量放大到 100 個，如果目的不是要測試相容性 (compatibility)，為了縮短測試時間，很自然就會想要把 test case "拆散" 執行在不同的裝置上，例如 4 台裝置分別執行 25 個 test case (有 4 x 25 = 100 個測試結果)，理想上只要花 1/4 的時間。這種做法將測試分群 (grouping) 的做法稱為 test sharding。
+
+Android Testing Support Library (ATSL) 支援 test sharding，但關於這方面的說明並不多，目前只有兩處：
+
+[quote,'https://developer.android.com/topic/libraries/testing-support-library/index.html#ajur-sharding[Testing Support Library - Test Sharding | Android Developers]']
+____
+The test runner supports *splitting a single test suite into multiple shards*, so you can easily run tests belonging to the same shard together as a group, under the same `Instrumentation` instance. Each shard is identified by an index number. When running tests, use the `-e numShards` option to specify the number of separate shards to create and the `-e shardIndex` option to specify which shard to run.
+____
+
+與 
+
+[quote,'https://developer.android.com/reference/android/support/test/runner/AndroidJUnitRunner.html[AndroidJUnitRunner | Android Developers]']
+____
+Filter test run to a shard of all tests, where `numShards` is an integer greater than 0 and `shardIndex` is an integer between 0 (inclusive) and `numShards` (exclusive): `adb shell am instrument -w -e numShards 4 -e shardIndex 1 com.android.foo/android.support.test.runner.AndroidJUnitRunner`
+____
+
+也就是 `AndroidJUnitRunner` 可以透過 `numShards` 與 `shardIndex` 兩個 instrumentation argument 來實現 test sharding，例如：
+
+----
+$ adb shell am instrument -w -e numShards 4 -e shardIndex 0 com.example.helloworld/android.support.test.runner.AndroidJUnitRunner
+----
+
+其中：
+
+ * `-e numShards <NUMBER>` - 將符合條件 (test size、annotation 等) 的 test case 劃分為 _NUMBER_ 個 shard。
+ * `-e shardIndex <INDEX>` - 只執行第 _INDEX_ 個 shard (從 0 起算)。
++
+注意 _INDEX_ 必須介於 0 ~ _INDEX_ - 1 之間，否則 test sharding 不會作用，所有的 test case 都會被執行。
+
+先拿相對單純的 `BasicSample` 來做試驗，裡面只有 2 個 test case (同屬一個 test suite)，把它拆成 2 個 shard：
+
+----
+$ ./gradlew installDebug installDebugAndroidTest
+$ adb shell am instrument -w -e numShards 2 -e shardIndex 0 com.example.android.testing.espresso.BasicSample.test/android.support.test.runner.AndroidJUnitRunner 
+
+Time: 0
+
+OK (0 tests) <1>
+
+$ adb shell am instrument -w -e numShards 2 -e shardIndex 1 com.example.android.testing.espresso.BasicSample.test/android.support.test.runner.AndroidJUnitRunner
+
+com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest:..
+
+Time: 4.408
+
+OK (2 tests) <2>
+----
+<1> 第一個 shard (`-e shardIndex 0`) 沒任何測試。
+<2> 第二個 shard (`-e shardIndex 1`) 則有 2 個測試。
+
+測試結果的數量 0 + 2 = 2 是對的，但第一個 shard 沒有任何測試是怎麼回事？為什麼不是平均分散在 2 個 shard？是因為分群的最小單位是 test suite 嗎？內部又是如何確保多個 shard 之間不會有重複的測試？
+
+把 `BasicSample` 拆成 3 個 shard 再觀察一次：
+
+----
+$ adb shell am instrument -w -e numShards 3 -e shardIndex 0 com.example.android.testing.espresso.BasicSample.test/android.support.test.runner.AndroidJUnitRunner
+
+com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest:.
+
+Time: 1.709
+
+OK (1 test) <1>
+
+$ adb shell am instrument -w -e numShards 3 -e shardIndex 1 com.example.androi
+d.testing.espresso.BasicSample.test/android.support.test.runner.AndroidJUnitRunner
+
+com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest:.
+
+Time: 1.465
+
+OK (1 test) <2>
+
+$ adb shell am instrument -w -e numShards 3 -e shardIndex 2 com.example.androi
+d.testing.espresso.BasicSample.test/android.support.test.runner.AndroidJUnitRunner
+
+Time: 0.001
+
+OK (0 tests) <3>
+----
+<1> 第一個 shard (`-e shardIndex 0`) 有 1 個測試。
+<2> 第二個 shard (`-e shardIndex 1`) 有 1 個測試。
+<3> 第三個 shard (`-e shardIndex 2`) 沒有任何測試。
+
+這一次分群的結果比較符合一般的預期，觀察到一個 test suite 也可能被拆散到不同的 shard，不過這還是無法解釋拆成 2 個 shard 時為什麼不是平均分配。
+
+== 分群的規則
+
+由於官方文件對於 test sharding 的分群規則隻字未提，網路上也沒有人在討論，只好從 `AndroidJUnitRunner` 的原始碼開始追起。
+
+.https://android.googlesource.com/platform/frameworks/testing/+/android-support-test/runner/src/main/java/android/support/test/runner/AndroidJUnitRunner.java[`AndroidJUnitRunner.java`]
+----
+public void onCreate(Bundle arguments) {
+    super.onCreate(arguments);
+
+    mArguments = arguments;
+    // build the arguments. Read from manifest first so manifest-provided args can be overridden
+    // with command line arguments
+    mRunnerArgs = new RunnerArgs.Builder() // <1>
+            .fromManifest(this)
+            .fromBundle(getArguments())
+            .build();
+    for (ApplicationLifecycleCallback listener : mRunnerArgs.appListeners) {
+        ApplicationLifecycleMonitorRegistry.getInstance().addLifecycleCallback(listener);
+    }
+
+    start();
+}
+
+public void onStart() {
+    super.onStart();
+
+    Bundle results = new Bundle();
+    try {
+        TestExecutor.Builder executorBuilder = new TestExecutor.Builder(this);
+        if (mRunnerArgs.debug) {
+            executorBuilder.setWaitForDebugger(true);
+        }
+
+        addListeners(mRunnerArgs, executorBuilder);
+
+        TestRequest testRequest = buildRequest(mRunnerArgs, getArguments()); // <2>
+
+        results = executorBuilder.build().execute(testRequest);
+----
+<1> 分別從 manifest 及 command line 蒐集 instrumentation argument 到 https://android.googlesource.com/platform/frameworks/testing/+/android-support-test/runner/src/main/java/android/support/test/internal/runner/RunnerArgs.java[`android.support.test.internal.runner.RunnerArgs`]，後者可以覆寫前者。
+<2> 根據 `RunnerArgs` 建立 https://android.googlesource.com/platform/frameworks/testing/+/android-support-test/runner/src/main/java/android/support/test/internal/runner/TestRequestBuilder.java[`android.support.test.internal.runner.TestRequestBuilder`]，決定要不要啟用 test sharding。
+
+.https://android.googlesource.com/platform/frameworks/testing/+/android-support-test/runner/src/main/java/android/support/test/internal/runner/TestRequestBuilder.java[`TestRequestBuilder.java`]
+----
+private static class ShardingFilter extends Filter {
+    import org.junit.runner.Description;
+    // ...
+    public boolean shouldRun(Description description) {
+        if (description.isTest()) {
+            return (Math.abs(description.hashCode()) % mNumShards) == mShardIndex; // <3>
+        }
+        // this is a suite, explicitly check if any children should run
+        for (Description each : description.getChildren()) {
+            if (shouldRun(each)) {
+                return true;
+            }
+        }
+        // no children to run, filter this out
+        return false;
+    }
+
+public TestRequestBuilder addFromRunnerArgs(RunnerArgs runnerArgs) {
+    for (RunnerArgs.TestArg test : runnerArgs.tests) {
+        if (test.methodName == null) {
+            addTestClass(test.testClassName);
+        } else {
+            addTestMethod(test.testClassName, test.methodName);
+        }
+    }
+    for (RunnerArgs.TestArg test : runnerArgs.notTests) {
+        if (test.methodName == null) {
+            removeTestClass(test.testClassName);
+        } else {
+            removeTestMethod(test.testClassName, test.methodName);
+        }
+    }
+    for (String pkg : runnerArgs.testPackages) {
+        addTestPackage(pkg);
+    }
+    for (String pkg : runnerArgs.notTestPackages) {
+        removeTestPackage(pkg);
+    }
+    if (runnerArgs.testSize != null) { // <2>
+        addTestSizeFilter(runnerArgs.testSize);
+    }
+    if (runnerArgs.annotation != null) {
+        addAnnotationInclusionFilter(runnerArgs.annotation);
+    }
+    for (String notAnnotation : runnerArgs.notAnnotations) {
+        addAnnotationExclusionFilter(notAnnotation);
+    }
+    if (runnerArgs.testTimeout > 0) {
+        setPerTestTimeout(runnerArgs.testTimeout);
+    }
+    if (runnerArgs.numShards > 0 && runnerArgs.shardIndex >= 0 &&
+            runnerArgs.shardIndex < runnerArgs.numShards) { // <1>
+        addShardingFilter(runnerArgs.numShards, runnerArgs.shardIndex);
+    }
+    if (runnerArgs.logOnly) {
+        setSkipExecution(true);
+    }
+    return this;
+}
+----
+<1> `shardIndex` 必須介於 0 ~ `numShards` - 1 之間，這解釋了為什麼 `shardIndex` 超出範圍時 test sharding 就不會作用。
+<2> Test sharding 也是 test filtering 的一環，但順序在 test size 與 annotation 之後。
+<3> 一個 test case 會被分配到哪個 shard 跟 https://github.com/junit-team/junit4/blob/master/src/main/java/org/junit/runner/Description.java[`org.junit.runner.Description`] 的 hash code 有關。
+
+.https://github.com/junit-team/junit4/blob/master/src/main/java/org/junit/runner/Description.java[`Description.java`]
+----
+private Description(Class<?> clazz, String displayName, Annotation... annotations) {
+    this(clazz, displayName, displayName, annotations); // <1>
+}
+
+private Description(Class<?> testClass, String displayName, Serializable uniqueId, Annotation... annotations) {
+    // ...
+}
+
+public static Description createTestDescription(String className, String name, Annotation... annotations) {
+    return new Description(null, formatDisplayName(name, className), annotations);
+}
+
+private static String formatDisplayName(String name, String className) {
+    return String.format("%s(%s)", name, className); // <2>
+}
+
+public int hashCode() {
+    return fUniqueId.hashCode(); // <1>
+}
+----
+<1> hash code 是根據 `uniqueId` 計算出來。
+<2> 而 `uniqueId` 其實就是 test method name 及 test class name 的組合。
+
+規則極其簡單，跟 test case 的數量無關，跟 test case 是否同屬一個 test suite 也無關，而是跟 test case 名稱的 hash code (絕對值) 除以 `numShards` 的餘數有關：
+
+----
+Math.abs(description.hashCode()) % mNumShards) == mShardIndex
+----
+
+同樣以 `BasicSample` 底下的兩個 test case 為例，首先算出各自的 hash code：
+
+ * `"changeText_sameActivity(com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest)"` => -1470507331
+ * `"changeText_newActivity(com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest)"` => 1323525255
+
+拆分成 2 個 shard 時 (`-e numShards 2`)：
+
+ * 1470507331 % 2 = 1
+ * 1323525255 % 2 = 1
+
+所以兩個 test case 都被分配到 shard 1。再來看看拆成 3 個 shard 的狀況 (`-e numShards 3`)：
+
+ * 1470507331 % 3 = 1
+ * 1323525255 % 3 = 0
+
+也之所以 shard 0 跟 shard 1 都分別有一個測試，但 shard 2 則沒有任何測試。
+
+把 test case 的數量放大一點會怎樣？拿 https://github.com/googlesamples/android-testing/tree/master/ui/espresso[`googlesamples/android-testings`] 另一個有 25 個 test case 的 `AndroidJunitRunnerSample` 來做試驗，拆成 6 個 shard：
+
+----
+$ rm -r app/src/androidTest/java/com/example/android/testing/androidjunitrunnersample/suite/ # <1>
+$ ./gradlew installDebug installDebugAndroidTest
+...
+$ adb shell am instrument -w -e numShards 6 -e shardIndex 0 com.example.android.testing.androidjunitrunnersample.test/android.support.test.runner.AndroidJUnitRunner
+$ adb shell am instrument -w -e numShards 6 -e shardIndex 1 com.example.android.testing.androidjunitrunnersample.test/android.support.test.runner.AndroidJUnitRunner
+...
+----
+<1> 由於 `AndroidJunitRunnerSample` 內部用到 https://github.com/junit-team/junit4/wiki/aggregating-tests-in-suites[suite class] 重新包裝 test class，許多測試會重複執行，先將它排除，否則會有 69 個測試結果。
+
+結果並不意外，shard 0 ~ 5 分別執行 4、2、4、6、5、4 個測試。
+
+重新歸納一下，分群是根據 test class name 與 test method name 組合起來的 hash code，所以：
+
+ * 不該預期每個 shard 分配到的 test case 數量會差不多。
++
+--
+理論上可以透過修改 class name 或 method name 來控制某個 test case 要分配到哪個 shard，但在實務上是不可行的。
+
+以上面的 `changeText_newActity` 為例：(拆成 3 個 shard)
+
+ 1. `"changeText_newActivity(com.example.android.testing.espresso.BasicSample.ChangeTextBehaviorTest)"` => 1323525255 (hash code)
+ 2. 1323525255 % 3 = 0
+
+若想讓它分配到 shard 2，必須讓 hash code 除以 3 的餘數是 2 才行。
+--
++
+ * 一個 test suite 可能被拆成多個 shard，也就是同一個 suite 下的多個 test case，可能同時在不同的 shard 執行。
++
+要注意的是，suite setup/teardown (如果有的話) 也會在不同的 shard 各執行一次，這與未啟動 test sharding 前只會執行一次的行為有很大的差異。如果在 suite setup/teardown 有初始化/重置外部資源 (儘量避免這種狀況)，就可能因為多次初始化/重置而引發一些問題。
++
+ * 只要所有裝置上 `String.hashCode()` 的實作都一樣 (Java 對 http://docs.oracle.com/javase/8/docs/api/java/lang/String.html#hashCode--[`String.hashCode()` 的演算法]有明確的定義)，就不會發生一個 test case 被分配到多個 shard 的問題。
+
+可以將測試分批執行了，下一個問題是如何將結果合併在一起？
+
+== 合併測試結果
+
+換個問法，就是 `connectedAndroidTest` task 有支援 test sharding 嗎？
+
+理想上，`connectedAndroidTest` task 要能自動依連接的裝置數量來決定 `numShards`，並在不同裝置上執行測試時傳入不同的 `shardIndex`，但目前 (Android Plugin for Gradle 2.2) 只支援透過 http://google.github.io/android-gradle-dsl/2.2/com.android.build.gradle.internal.dsl.ProductFlavor.html#com.android.build.gradle.internal.dsl.ProductFlavor:testInstrumentationRunnerArguments[`testInstrumentationRunnerArguments`] 自訂 instrument argument：
+
+----
+android {
+    defaultConfig {
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments([numShards: "3", shardIndex: "0"])
+    }
+}
+----
+
+或：
+
+----
+$ ./gradlew connectedAndroidTest -Pandroid.testInstrumentationRunnerArguments.numShards=3 -Pandroid.testInstrumentationRunnerArguments.shardIndex=0
+$ ./gradlew connectedAndroidTest -Pandroid.testInstrumentationRunnerArguments.numShards=3 -Pandroid.testInstrumentationRunnerArguments.shardIndex=1
+...
+----
+
+很明顯地，執行多次 `connectedAndroidTest` 的結果是分開的。
+
+所幸 Spoon 從 https://github.com/square/spoon/blob/master/CHANGELOG.md#version-140-2016-04-11[1.4.0] (2016-04-11) 開始支援 test sharding，更從 https://github.com/square/spoon/blob/master/CHANGELOG.md#version-154-2016-05-31[1.5.4] (2016-05-31) 開始支援合併不同 shard 的 code coverage，對 test sharding 的支援相當完整。
+
+以上面的 `AndroidJunitRunnerSample` 為例，先為它加上 Spoon Gradle Plugin 並啟用 auto sharding：
+
+.`app/build.gradle`
+----
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+
+  dependencies {
+    classpath 'com.stanfy.spoon:spoon-gradle-plugin:1.2.2'
+  }
+}
+
+apply plugin: 'com.android.application'
+apply plugin: 'spoon'
+
+spoon {
+    shard = true
+}
+...
+----
+
+將 `shard` 設成 `true` 就能啟用 auto sharding，有別於單純的 test sharding，Spoon 會自動依連接的裝置數量來決定 `numShards`，搭配在不同裝置上傳入不同的 `shardIndex`，結束後也會將測試結果、code coverage 合併。
+
+試試看連接 2 台裝置時的情形：
+
+----
+$ ./gradlew spoon
+...
+:app:spoonDebugAndroidTest
+2016-10-07 11:51:22 [SR.runTests] Executing instrumentation suite on 2 device(s).
+:app:spoon
+
+BUILD SUCCESSFUL
+
+$ open app/build/spoon/debug/index.html
+----
+
+25 個 test case 被分散在 2 台裝置上同時執行，13 + 12 = 25 個測試結果被合併在一起。
+
+image::/images/spoon-auto-sharding.png[]
+
+比較一下沒有啟用 auto sharding 的結果：
+
+image::/images/spoon-no-sharding.png[]
+
+25 個 test case 同時執行在 2 台裝置上，所以會有 25 x 2 = 50 個測試結果。
+

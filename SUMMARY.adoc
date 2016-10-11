@@ -1,0 +1,59 @@
+= Summary
+
+ * link:README.adoc[前言]
+ * link:instrumentation/README.adoc[Instrumentation Test]
+   ** link:instrumentation/test-filtering.adoc[Test Filtering]
+   ** link:instrumentation/test-sharding.adoc[Test Sharding]
+
+////
+ * link:emulators/README.adoc[模擬器]
+   ** link:emulators/jenkins-integration.adoc[整合 Jenkins]
+////
+
+////
+TBD:
+
+ * filtering -> sharding ... execution 其間的順序畫成流程圖
+
+Questions:
+
+ * http://handstandsam.com/2016/09/07/running-multiple-android-emulators-simultaneously-on-osx/[Running Multiple Android Emulators Simultaneously on OSX – Handstand Sam] 同時執行 8 台 emulator?? 但分 distributed node 似乎彈性比較大??
+ * STF 很值得試試??
+ * https://wiki.jenkins-ci.org/display/JENKINS/Summary+Display+Plugin[Summary Display Plugin - Jenkins - Jenkins Wiki] ?? 用 fields 就能提供額外的資訊
+ * https://wiki.jenkins-ci.org/display/JENKINS/Android+Device+connector+plugin ??
+ * https://wiki.jenkins-ci.org/display/JENKINS/iOS+Device+connector+plugin[iOS Device Connector Plugin - Jenkins - Jenkins Wiki] ??
+ * https://wiki.jenkins-ci.org/display/JENKINS/Fingerprint+Plugin[Fingerprint Plugin - Jenkins - Jenkins Wiki] ??
+ * https://wiki.jenkins-ci.org/display/JENKINS/Build+Environment+Plugin
+ * 什麼是 instrumentation test?? 似乎很多人都無法回答這個問題，例如 test apk 跟 main apk 執行在同一個 process 的特性，runner 的作用...
+ * filtering -> sharding 流程是這樣嗎??
+ * Run emulator with properties > Android OS version - 可以是 OS 版本 (例如 `5.1.1`)、`android list target` 輸出中雙引號裡的值，通常是 `android-{api-level}` (例如 `android-22`)。還可以是 SDK add-on，例如 `Google Inc.:Google APIs:9` (用 `android list target` 查看，還真的是這樣的字串)；還是得自己裝過，才知道確切的字串??
+ * 安裝 plugin 後，job configuration 的 Build Environment 會多出 "Run an Android emulator during build" 的設定；這裡的 "AN Android emulator" 是說同時間只有一個 emulator 嗎?? 若同時要執行在多個 emulator 上怎麼做?? 否則 `connectedAndroidTest` 就無法同時把測試撒到所有裝置上了?? 若實務上很難同時開啟多個 emulator，意謂著 cAT 是針對 device 而非 emulator 設計的??
+ * Matrix 的結果看起來很不錯，有 matrix table，測試結果也會分 configuration 來呈現 (沒有一次合併的問題)。
+ * Configuration Matrix > Add axis > Slaves 似乎可以把工作再往下派給其他人；若是一台接著一個 device，不就可以很多台同時執行??
+ * 為什麼 executor 開到 2 時，connectedAndroidTest 沒有出現問題?? 兩邊都想在所有的裝置上測試...
+ * 怎麼感覺 "Automatically install Android components when required" 沒作用?? 要自己裝 system image 才行
+ * 指定的 locale 好像沒作用?? `/Users/jeremykao/dev/android-sdk/tools/emulator -engine classic -ports 5690,5691 -report-console tcp:5823,max=60 -prop persist.sys.language=zh -prop persist.sys.country=TW -avd hudson_zh-TW_160_WVGA_android-24_x86 -no-snapshot-load -no-snapshot-save` 會不會跟 Android 7 的 locale 是設定 preference 有關?? 果然試過 Android 6 是可以的
+ * 沒有勾選 "Show emulator window" 時 (`-no-window`) 好像都等不到 emulator 開起來??
+ * 以 `android-wear/armeabi-v7a` 這個 tag/ABI 為例，若只能設定 ABI，那 `android-wear` 要怎麼指定?? 還是 tag 固定是 `default`?? v2.13 提到 "Enabled the automated installation of tagged system images, e.g. android-wear/x86" 試過把 `android-wear/x86` 整串丟進去 ABI 是可以的
+ * 測試時 ABI 要怎麼選擇，若為了求快只跑 x86 或 x86_64，那 ARM 怎麼辦?? 在測試上會有什麼差別?? https://developer.android.com/ndk/guides/abis.html
+ * android create avd -f -a -s WVGA800 -n hudson_en-US_160_WVGA_android-23 -t android-23 [android] Failed to run AVD creation command Error: Invalid --tag default for the selected target. 這錯誤是怎麼回事?? 一個 target 有多個 Tag/ABI，怎麼指定?? 預設用 default??
+ * Android Emulator Plugin 不能用在 SDK Tools 25 的 Emulator v2?? 在 log 裡看到 `-engine classic`
+ * Logs are automatically captured and saved 指的是 device log 嗎? => logcat.txt 自動 archive
+ * 勾選 "Run emulator with properties" 後的設定好複雜?? density 跟 resolution 有什麼差別?? 可以指定 locale，又 hardware properties 是什麼??
+ * Android Emulator Plugin 裝了一個 port-allocator，且 Build Environment 多了一個 "Assign unique TCP ports to avoid collisions" 設定，跟同時執行多個 emulator 有關嗎??
+ * 如何搭配 multi-configuration job type??
+ * 同一個 emulator 若需要用到多次 (套用不同的組態)，會自動排開不要同時執行；什麼叫做同一個 emulator?? 什麼 configuration 會成為 identifier 的一部份，感覺 emulator 的名稱會是這些 key 串起來??
+ * headless emulator??
+ * Android Emulator Plugin 是怎麼處理多台 emulator 的問題?? 也可以操作實機嗎??
+ * Robolectric 是很好的切入點，William 自己也還沒碰??
+ * gcloud 指令怎麼用，似乎很多問題??
+ * 如何做 Test Filtering，有沒有可能透過 JUnit4 做??
+
+教程規劃：
+
+ * 跟特定測試工具無關
+ * Google Cloud Test Lab
+ * Amazon Device Farm
+
+////
+
