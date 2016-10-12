@@ -4,6 +4,7 @@
  * link:instrumentation/README.adoc[Instrumentation Test]
    ** link:instrumentation/test-filtering.adoc[Test Filtering]
    ** link:instrumentation/test-sharding.adoc[Test Sharding]
+   ** link:instrumentation/test-sharding-rules.adoc[Test Sharding 分群的規則]
 
 ////
  * link:emulators/README.adoc[模擬器]
